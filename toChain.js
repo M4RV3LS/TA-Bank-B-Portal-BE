@@ -126,88 +126,60 @@ async function callAddKycVersionOnContract(
   return { txHash: receipt.hash, version };
 }
 
-// NEW: Pass exact KTP/KYC data URIs to CP for bundle creation
+// ✅ UPDATED: This function now receives the bundle from the CP and saves it locally.
 async function syncBundleWithCustomerPortal(
   userId,
   ktpDataUriForBundle,
   kycDataUriForBundle,
-  callingBankIdentifier
+  callingBankIdentifier // e.g., "BANK_B"
 ) {
-  const customerPortalRotateKeyUrl = `${CUSTOMER_PORTAL_INTERNAL_API_URL.replace(
-    "/internal",
-    ""
-  )}/account/rotate-key`;
+  const customerPortalApiKey =
+    process.env.CUSTOMER_PORTAL_API_KEY_FOR_THIS_BANK;
+  if (!customerPortalApiKey) {
+    throw new Error("Missing env var: CUSTOMER_PORTAL_API_KEY_FOR_THIS_BANK");
+  }
+  const customerPortalSyncUrl = `${CUSTOMER_PORTAL_INTERNAL_API_URL}/sync-kyc-bundle`;
 
   console.log(
-    `[BANK B - toChain - syncBundleWithCP] Calling CP (${customerPortalRotateKeyUrl}) for user ${userId}.`
+    `[BANK B - toChain - syncBundleWithCP] Calling CP (${customerPortalSyncUrl}) for user ${userId}.`
   );
-  // console.log(`  Will send KTP data (len ${ktpDataUriForBundle?.length}, prefix 50): ${String(ktpDataUriForBundle).substring(0,50)}...`);
-  // console.log(`  Will send KYC data (len ${kycDataUriForBundle?.length}, prefix 50): ${String(kycDataUriForBundle).substring(0,50)}...`);
 
-  let cpResponseJson;
   try {
     const fetchModule = await import("node-fetch");
-    const cpResponse = await fetchModule.default(customerPortalRotateKeyUrl, {
+    const cpResponse = await fetchModule.default(customerPortalSyncUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": customerPortalApiKey,
+      },
       body: JSON.stringify({
         userId: Number(userId),
         ktpData: ktpDataUriForBundle,
         kycData: kycDataUriForBundle,
-        callingBankId: callingBankIdentifier, // e.g., "BANK_B" from process.env.THIS_BANK_IDENTIFIER
       }),
     });
 
     const responseText = await cpResponse.text();
     if (!cpResponse.ok) {
-      console.error(
-        `[BANK B - toChain - syncBundleWithCP] CP call failed for user ${userId}. Status: ${cpResponse.status}, Body: ${responseText}`
-      );
       throw new Error(
-        `Customer Portal key rotation failed: ${cpResponse.status} - ${responseText}`
+        `Customer Portal bundle sync failed: ${cpResponse.status} - ${responseText}`
       );
     }
 
-    try {
-      cpResponseJson = JSON.parse(responseText);
-    } catch (parseError) {
-      console.error(
-        `[BANK B - toChain - syncBundleWithCP] Failed to parse JSON from CP for user ${userId}. Raw: ${responseText}`,
-        parseError
-      );
-      throw new Error(
-        "Customer Portal returned non-JSON response for key rotation."
-      );
-    }
+    const cpResponseJson = JSON.parse(responseText);
 
-    if (
-      !cpResponseJson.success ||
-      !cpResponseJson.newKey ||
-      !cpResponseJson.newEncryptedBundle
-    ) {
-      console.error(
-        `[BANK B - toChain - syncBundleWithCP] CP response missing required fields for user ${userId}. Response:`,
-        cpResponseJson
-      );
+    // Ensure the response from the CP contains the data we now need
+    if (!cpResponseJson.success || !cpResponseJson.newEncryptedBundle) {
       throw new Error(
-        "Customer Portal did not return all required data (newKey, newEncryptedBundle)."
+        "Customer Portal did not return the required encryptedBundle."
       );
     }
 
     console.log(
-      `[BANK B - toChain - syncBundleWithCP] Received from CP for user ${userId}:`
-    );
-    console.log(`  New Key (full): ${cpResponseJson.newKey}`);
-    console.log(
-      `  New Encrypted Bundle (length): ${cpResponseJson.newEncryptedBundle.length}`
-    );
-    console.log(
-      `  New Encrypted Bundle (prefix 100): ${cpResponseJson.newEncryptedBundle.substring(
-        0,
-        100
-      )}...`
+      `[BANK B - toChain - syncBundleWithCP] Received new bundle from CP for user ${userId}.`
     );
 
+    // --- NEW LOGIC: Save the received bundle to this bank's local database ---
     const upsertLocalBundleSql = `
       INSERT INTO user_profiles (user_id, encrypted_bundle, updated_at)
       VALUES (?, ?, NOW())
@@ -220,13 +192,11 @@ async function syncBundleWithCustomerPortal(
       cpResponseJson.newEncryptedBundle,
     ]);
     console.log(
-      `[BANK B - toChain - syncBundleWithCP] Successfully updated bankb_portal.user_profiles for user_id ${userId} with bundle from CP.`
+      `[BANK B - toChain - syncBundleWithCP] Successfully updated bankb_portal.user_profiles for user_id ${userId}.`
     );
+    // -------------------------------------------------------------------------
 
-    return {
-      newKey: cpResponseJson.newKey,
-      newEncryptedBundle: cpResponseJson.newEncryptedBundle,
-    };
+    return { success: true };
   } catch (err) {
     console.error(
       `[BANK B - toChain - syncBundleWithCP] Error during sync for user ${userId}:`,
