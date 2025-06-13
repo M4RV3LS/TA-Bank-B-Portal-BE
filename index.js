@@ -1,9 +1,9 @@
-// bank-portal/bank-b/backend/index.js
+// path file : bank-portal/bank-b/TA-BANK-B-Portal-BE/index.js
 const express = require("express");
 const cors = require("cors");
-const connection = require("./dbConnection"); // Ensure this points to Bank B's dbConnection.js
+const connection = require("./dbConnection"); // Ensure this points to BANK B's dbConnection.js
 const fetch = require("node-fetch");
-const { sendToChain } = require("./toChain"); // Ensure this uses Bank B's signer/config
+const { sendToChain } = require("./toChain"); // Ensure this uses BANK B's signer/config
 
 const profileRoutes = require("./routes/profileRoutes");
 const checkBlockchain = require("./routes/checkBlokchain"); // Corrected typo: checkBlockchain
@@ -20,7 +20,7 @@ const allowedOrigins = [
   // Renamed for clarity
   "http://localhost:3000", // Customer Portal Frontend
   "http://localhost:3001", // BANK B Frontend
-  "http://localhost:3003", // Bank B Frontend (assuming it runs on 3003)
+  "http://localhost:3003", // BANK B Frontend (assuming it runs on 3003)
   // Add other allowed origins for bank frontends if necessary
 ];
 
@@ -28,6 +28,9 @@ const GATEWAY_PORTS = {
   BANK_A: 4100,
   BANK_B: 5100,
 };
+
+const util = require("util");
+const queryAsync = util.promisify(connection.query).bind(connection);
 
 function getGatewayApiBaseUrl(bankId) {
   if (!bankId) return null;
@@ -53,8 +56,8 @@ app.use(
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// --- Ethereum Setup (for Bank B) ---
-// Ensure .env variables are loaded for Bank B (PRIVATE_KEY, RPC_URL, KYC_REGISTRY_ADDRESS)
+// --- Ethereum Setup (for BANK B) ---
+// Ensure .env variables are loaded for BANK B (PRIVATE_KEY, RPC_URL, KYC_REGISTRY_ADDRESS)
 require("dotenv").config(); // Ensure .env is loaded
 
 let provider;
@@ -72,7 +75,7 @@ try {
     );
   }
   provider = new JsonRpcProvider(process.env.RPC_URL);
-  signer = new Wallet(process.env.PRIVATE_KEY, provider); // Bank B's signer
+  signer = new Wallet(process.env.PRIVATE_KEY, provider); // BANK B's signer
   const artifact = require(__dirname + "/abi/KycRegistryV3.json");
   contractWithSigner = new Contract(
     process.env.KYC_REGISTRY_ADDRESS,
@@ -80,11 +83,11 @@ try {
     signer
   );
   console.log(
-    `[ETH Setup Bank B] Connected to contract ${process.env.KYC_REGISTRY_ADDRESS} with signer ${signer.address}`
+    `[ETH Setup BANK B] Connected to contract ${process.env.KYC_REGISTRY_ADDRESS} with signer ${signer.address}`
   );
 } catch (ethSetupError) {
   console.error(
-    "FATAL: Ethereum setup failed for Bank B backend:",
+    "FATAL: Ethereum setup failed for BANK B backend:",
     ethSetupError
   );
   // Decide if the app should exit or continue with limited functionality
@@ -208,6 +211,62 @@ app.post(
   }
 );
 
+// --- ADDED: DB Logger function ---
+async function logTransactionToDb(txData) {
+  const {
+    txHash,
+    requestId,
+    clientId,
+    txType,
+    ethAmountWei, // Note: We'll pass Wei directly here
+    receipt,
+    version, // Will be null for 'pay'
+    issuerAddress,
+  } = txData;
+
+  const sql = `
+    INSERT INTO blockchain_transactions
+      (tx_hash, request_id, client_id, tx_type, eth_amount_wei, onchain_status, 
+       block_number, gas_used, version, issuer_address, db_log_duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  console.log(
+    `[DB Logger] Attempting to log tx ${txHash} for request ${requestId}.`
+  );
+  const dbLogStartTime = Date.now();
+
+  try {
+    const dbLogEndTime = Date.now();
+    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
+
+    const params = [
+      txHash,
+      requestId,
+      clientId,
+      txType,
+      ethAmountWei, // Already in Wei
+      receipt.status,
+      receipt.blockNumber,
+      receipt.gasUsed.toString(),
+      version,
+      issuerAddress,
+      dbLogDurationMs,
+    ];
+
+    await queryAsync(sql, params);
+
+    console.log(
+      `[DB Logger] Successfully logged tx ${txHash}. DB write took: ${dbLogDurationMs}ms.`
+    );
+  } catch (dbErr) {
+    console.error(
+      `[DB Logger] CRITICAL ERROR: Failed to log successful tx ${txHash} to database. Manual check required.`,
+      dbErr
+    );
+  }
+}
+
 // STREAM KTP IMAGE
 app.get("/kyc-requests/:id/ktp", (req, res) => {
   const { id } = req.params;
@@ -316,7 +375,6 @@ app.post("/kyc-requests/:id/send-to-dukcapil", (req, res) => {
     "SELECT * FROM user_kyc_request WHERE request_id = ?",
     [id],
     async (err, rows) => {
-      console.log("error:", err);
       if (err) return res.status(500).json({ error: "DB error" });
       if (!rows.length) return res.status(404).json({ error: "Not found" });
       const r = rows[0];
@@ -482,11 +540,12 @@ app.post("/kyc-requests/:id/send-to-chain", async (req, res) => {
 });
 
 // Pay endpoint
+// In bank-b/backend/index.js (and bank-b/backend/index.js)
 
-// This endpoint should be identical in both bank-a/backend/index.js and bank-b/backend/index.js
-// Ensure 'connection' and 'contractWithSigner' are correctly scoped and initialized for the respective bank.
+// bank-portal/bank-b/backend/index.js (or bank-b/backend/index.js)
+// Ensure 'express', 'connection', 'contractWithSigner', 'ethers' are imported/available
 
-// bank-portal/bank-b/backend/index.js (or bank-a/backend/index.js)
+// bank-portal/bank-b/backend/index.js (or bank-b/backend/index.js)
 // Ensure 'express', 'connection', 'contractWithSigner', 'ethers' are imported/available
 
 app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
@@ -695,6 +754,7 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
     );
 
     // 4. Execute on-chain payment
+
     // --- START: Execution Time Logging ---
     const startTime = Date.now();
     // --- END: Execution Time Logging ---
@@ -707,6 +767,7 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
     );
 
     const receipt = await tx.wait(); // Wait for transaction to be mined
+
     // --- START: Execution Time Logging ---
     const endTime = Date.now();
     const executionTime = (endTime - startTime) / 1000; // in seconds
@@ -716,7 +777,7 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
     // --- END: Execution Time Logging ---
 
     console.log(
-      `[PAY on ${bankIdentifier}] Payment transaction mined details. Block: ${
+      `[PAY on ${bankIdentifier}] Payment transaction mined for request ${id}. Block: ${
         receipt.blockNumber
       }, Status: ${receipt.status === 1 ? "Success" : "Failed"}`
     );
@@ -729,6 +790,19 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
         `On-chain payment transaction failed. Tx hash: ${tx.hash}. Status: ${receipt.status}`
       );
     }
+
+    // --- ADDED: Log to DB on success ---
+    await logTransactionToDb({
+      txHash: receipt.hash,
+      requestId: id,
+      clientId: clientId,
+      txType: "pay",
+      ethAmountWei: paymentAmountInWei, // Pass the Wei amount directly
+      receipt: receipt,
+      version: null, // No specific version for a 'pay' transaction
+      issuerAddress: signer.address,
+    });
+    // --- END ADDED ---
 
     // 5. Update local database status
     await new Promise((resolve, reject) => {
@@ -810,6 +884,8 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
 });
 
 // Get On-Chain History
+// bank-portal/bank-b/backend/index.js
+
 app.get("/kyc-requests/:clientId/onchain-history", async (req, res) => {
   const clientId = Number(req.params.clientId);
   if (isNaN(clientId) || clientId <= 0) {
@@ -899,14 +975,14 @@ app.delete("/kyc-requests/:id", (req, res) => {
   );
 });
 
-// Fetch and Verify Reuse KYC Data (Endpoint called by Bank B's frontend)
+// Fetch and Verify Reuse KYC Data (Endpoint called by BANK B's frontend)
 app.post(
   "/kyc-requests/:id/fetch-and-verify-reuse",
   express.json(),
   async (req, res) => {
     const { id: requestId } = req.params;
-    const thisBankSignerAddress = await signer.getAddress(); // Bank B's address
-    const thisBankIdentifier = process.env.THIS_BANK_IDENTIFIER; // Should be "BANK_B"
+    const thisBankSignerAddress = await signer.getAddress(); // BANK B's address
+    const thisBankIdentifier = process.env.THIS_BANK_IDENTIFIER;
     const customerPortalApiKey =
       process.env.CUSTOMER_PORTAL_API_KEY_FOR_THIS_BANK;
     const interBankJwtSecret =
@@ -1015,7 +1091,7 @@ app.post(
       }
 
       // 2. Determine Home Bank's Gateway URL
-      const homeBankGatewayUrl = getGatewayApiBaseUrl(actualHomeBankCode); // e.g., BANK_A -> http://localhost:4100
+      const homeBankGatewayUrl = getGatewayApiBaseUrl(actualHomeBankCode); // e.g., BANK_B -> http://localhost:4100
       if (!homeBankGatewayUrl) {
         console.error(
           `[FETCH-REUSE DEBUG] 3.2. Gateway URL for Home Bank ${actualHomeBankCode} not found.`
@@ -1028,7 +1104,7 @@ app.post(
         `[FETCH-REUSE DEBUG] 3.1. Home Bank Code: ${actualHomeBankCode}, Gateway URL: ${homeBankGatewayUrl}`
       );
 
-      // 3. Generate This Bank's (Bank B's) JWT badge for Home Bank Gateway (BANK B's Gateway)
+      // 3. Generate This Bank's (BANK B's) JWT badge for Home Bank Gateway (BANK B's Gateway)
       const interBankJwtBadge = jwt.sign(
         { address: thisBankSignerAddress },
         interBankJwtSecret,
@@ -1212,7 +1288,7 @@ app.post(
 app.use("/profile-ids", profileRoutes);
 app.use("/check-blockchain", checkBlockchain); // Corrected typo
 
-const PORT = process.env.PORT || 5000; // For Bank B, should be 5000
+const PORT = process.env.PORT || 5000; // For BANK B, should be 5000
 app.listen(PORT, () =>
-  console.log(`🚀 Bank B backend running on http://localhost:${PORT}`)
+  console.log(`🚀 BANK B backend running on http://localhost:${PORT}`)
 );

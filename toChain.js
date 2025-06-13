@@ -1,4 +1,4 @@
-// bank-portal/bank-b/backend/toChain.js
+// path file : bank-portal/bank-b/TA-BANK-B-Portal-BE/toChain.js
 
 require("dotenv").config();
 const { ethers } = require("ethers");
@@ -65,6 +65,70 @@ async function updateRequestStatus(requestId, newStatus, note = null) {
   }
 }
 
+// --- NEW FUNCTION: Log transaction to the database ---
+/**
+ * Logs a successful blockchain transaction to the local database.
+ * @param {object} txData - The data to log.
+ * @returns {Promise<void>}
+ */
+async function logTransactionToDb(txData) {
+  const {
+    txHash,
+    requestId,
+    clientId,
+    txType,
+    ethAmount,
+    receipt,
+    version,
+    issuerAddress,
+  } = txData;
+
+  const sql = `
+    INSERT INTO blockchain_transactions
+      (tx_hash, request_id, client_id, tx_type, eth_amount_wei, onchain_status, 
+       block_number, gas_used, version, issuer_address, db_log_duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  console.log(
+    `[DB Logger] Attempting to log tx ${txHash} for request ${requestId}.`
+  );
+  const dbLogStartTime = Date.now();
+
+  try {
+    // We will calculate duration inside this block and insert it directly.
+    const dbLogEndTime = Date.now();
+    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
+
+    const params = [
+      txHash,
+      requestId,
+      clientId,
+      txType,
+      ethers.parseEther(ethAmount).toString(),
+      receipt.status,
+      receipt.blockNumber,
+      receipt.gasUsed.toString(),
+      version,
+      issuerAddress,
+      dbLogDurationMs,
+    ];
+
+    await queryAsync(sql, params);
+
+    // Log the final measured time
+    console.log(
+      `[DB Logger] Successfully logged tx ${txHash}. DB write took: ${dbLogDurationMs}ms.`
+    );
+  } catch (dbErr) {
+    console.error(
+      `[DB Logger] CRITICAL ERROR: Failed to log successful tx ${txHash} to database. Manual check required.`,
+      dbErr
+    );
+    // In a production system, you might add this to a retry queue.
+  }
+}
+
 async function callAddKycVersionOnContract(
   clientId,
   hashKtp,
@@ -79,10 +143,10 @@ async function callAddKycVersionOnContract(
     `[BANK B - toChain - callAddKycVersion] For clientId ${clientId}: ETH: ${ethAmountString}, On-chain status: '${statusOnChain}', HashKTP: ${hashKtp}, HashKYC: ${hashKyc}`
   );
 
-  // --- START: Execution Time Logging ---
+  // 1. Start the timer
   const startTime = Date.now();
-  // --- END: Execution Time Logging ---
 
+  // 2. Send the transaction
   const tx = await kycContract.addKycVersion(
     clientId,
     hashKtp,
@@ -91,24 +155,21 @@ async function callAddKycVersionOnContract(
     txOverrides
   );
   console.log(
-    `[BANK B - toChain - callAddKycVersion] Tx sent for clientId ${clientId}, hash: ${tx.hash}. Waiting...`
+    `[BANK B - toChain - callAddKycVersion] Tx sent for clientId ${clientId}, hash: ${tx.hash}. Waiting for mining...`
   );
+
+  // 3. Wait for the transaction to be mined to get the receipt
   const receipt = await tx.wait();
 
-   // --- START: Execution Time Logging ---
+  // 4. Stop the timer and log the duration
   const endTime = Date.now();
   const executionTime = (endTime - startTime) / 1000; // in seconds
   console.log(
-    `[Bank B - toChain - callAddKycVersion] Tx MINED for clientId ${clientId}. Execution Time: ${executionTime} seconds.`
+    `[BANK B - toChain - callAddKycVersion] Tx MINED for clientId ${clientId}. Execution Time: ${executionTime} seconds.`
   );
-  // --- END: Execution Time Logging ---
-  
+
   console.log(
-    "---- FULL TRANSACTION RECEIPT ----\n",
-    JSON.stringify(receipt, null, 2)
-  );
-  console.log(
-    `[Bank B - toChain - callAddKycVersion] Tx mined receipt status: ${
+    `[BANK B - toChain - callAddKycVersion] Tx mined receipt status: ${
       receipt.status === 1 ? "Success" : "Failed"
     }`
   );
@@ -136,7 +197,8 @@ async function callAddKycVersionOnContract(
       }
     }
   }
-  return { txHash: receipt.hash, version, executionTime }; // Return execution time as well
+  // 5. Return all necessary data, including the full receipt for the logger
+  return { txHash: receipt.hash, version, executionTime, receipt };
 }
 
 // ✅ UPDATED: This function now receives the bundle from the CP and saves it locally.
@@ -319,6 +381,25 @@ async function sendToChain(requestRow) {
       status_kyc,
       ethAmountString
     );
+
+    console.log(
+      `[BANK B - sendToChain] On-chain call for request ${request_id} completed in ${onChainResult.executionTime} seconds.`
+    );
+
+    // --- ADDED: Log to DB on success ---
+    if (onChainResult.receipt && onChainResult.receipt.status === 1) {
+      await logTransactionToDb({
+        txHash: onChainResult.txHash,
+        requestId: request_id,
+        clientId: client_id,
+        txType: "addKycVersion",
+        ethAmount: ethAmountString,
+        receipt: onChainResult.receipt,
+        version: onChainResult.version,
+        issuerAddress: signer.address,
+      });
+    }
+    // --- END ADDED ---
 
     // Pass the exact data URIs used for hashing to the sync function
     await syncBundleWithCustomerPortal(
