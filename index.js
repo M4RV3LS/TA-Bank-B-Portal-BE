@@ -695,6 +695,10 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
     );
 
     // 4. Execute on-chain payment
+    // --- START: Execution Time Logging ---
+    const startTime = Date.now();
+    // --- END: Execution Time Logging ---
+
     const tx = await contractWithSigner.pay(clientId, {
       value: paymentAmountInWei,
     });
@@ -703,8 +707,16 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
     );
 
     const receipt = await tx.wait(); // Wait for transaction to be mined
+    // --- START: Execution Time Logging ---
+    const endTime = Date.now();
+    const executionTime = (endTime - startTime) / 1000; // in seconds
     console.log(
-      `[PAY on ${bankIdentifier}] Payment transaction mined for request ${id}. Block: ${
+      `[PAY on ${bankIdentifier}] Payment transaction MINED for request ${id}. Execution Time: ${executionTime} seconds.`
+    );
+    // --- END: Execution Time Logging ---
+
+    console.log(
+      `[PAY on ${bankIdentifier}] Payment transaction mined details. Block: ${
         receipt.blockNumber
       }, Status: ${receipt.status === 1 ? "Success" : "Failed"}`
     );
@@ -764,6 +776,7 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
       requestId: id,
       blockNumber: receipt.blockNumber,
       events: events,
+      executionTimeSeconds: executionTime,
     });
   } catch (error) {
     console.error(

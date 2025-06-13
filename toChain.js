@@ -79,6 +79,10 @@ async function callAddKycVersionOnContract(
     `[BANK B - toChain - callAddKycVersion] For clientId ${clientId}: ETH: ${ethAmountString}, On-chain status: '${statusOnChain}', HashKTP: ${hashKtp}, HashKYC: ${hashKyc}`
   );
 
+  // --- START: Execution Time Logging ---
+  const startTime = Date.now();
+  // --- END: Execution Time Logging ---
+
   const tx = await kycContract.addKycVersion(
     clientId,
     hashKtp,
@@ -90,12 +94,21 @@ async function callAddKycVersionOnContract(
     `[BANK B - toChain - callAddKycVersion] Tx sent for clientId ${clientId}, hash: ${tx.hash}. Waiting...`
   );
   const receipt = await tx.wait();
+
+   // --- START: Execution Time Logging ---
+  const endTime = Date.now();
+  const executionTime = (endTime - startTime) / 1000; // in seconds
+  console.log(
+    `[Bank B - toChain - callAddKycVersion] Tx MINED for clientId ${clientId}. Execution Time: ${executionTime} seconds.`
+  );
+  // --- END: Execution Time Logging ---
+  
   console.log(
     "---- FULL TRANSACTION RECEIPT ----\n",
     JSON.stringify(receipt, null, 2)
   );
   console.log(
-    `[BANK B - toChain - callAddKycVersion] Tx mined for clientId ${clientId}, receipt status: ${
+    `[Bank B - toChain - callAddKycVersion] Tx mined receipt status: ${
       receipt.status === 1 ? "Success" : "Failed"
     }`
   );
@@ -123,7 +136,7 @@ async function callAddKycVersionOnContract(
       }
     }
   }
-  return { txHash: receipt.hash, version };
+  return { txHash: receipt.hash, version, executionTime }; // Return execution time as well
 }
 
 // ✅ UPDATED: This function now receives the bundle from the CP and saves it locally.
