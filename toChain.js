@@ -86,8 +86,9 @@ async function logTransactionToDb(txData) {
   const sql = `
     INSERT INTO blockchain_transactions
       (tx_hash, request_id, client_id, tx_type, eth_amount_wei, onchain_status, 
-       block_number, gas_used, version, issuer_address, db_log_duration_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       block_number, gas_used, version, issuer_address
+       )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   console.log(
@@ -96,10 +97,6 @@ async function logTransactionToDb(txData) {
   const dbLogStartTime = Date.now();
 
   try {
-    // We will calculate duration inside this block and insert it directly.
-    const dbLogEndTime = Date.now();
-    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
-
     const params = [
       txHash,
       requestId,
@@ -111,10 +108,13 @@ async function logTransactionToDb(txData) {
       receipt.gasUsed.toString(),
       version,
       issuerAddress,
-      dbLogDurationMs,
     ];
 
     await queryAsync(sql, params);
+
+    // We will calculate duration inside this block and insert it directly.
+    const dbLogEndTime = Date.now();
+    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
 
     // Log the final measured time
     console.log(

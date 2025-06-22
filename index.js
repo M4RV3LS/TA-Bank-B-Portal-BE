@@ -48,7 +48,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
       cb(new Error("Not allowed by CORS"));
     },
-    methods: ["GET", "POST", "OPTIONS", "DELETE"],
+    methods: ["GET", "POST", "OPTIONS", "DELETE", "PUT"],
     credentials: true,
   })
 );
@@ -138,9 +138,10 @@ app.post(
       });
     }
 
-    if (!client_id || !customer_name || !customer_email || !customer_phone) {
+    if (!client_id || !customer_name) {
+      // Email and phone are no longer required here
       return res.status(400).json({
-        error: "Missing common required fields (client_id, name, email, phone)",
+        error: "Missing required fields (client_id, name)",
       });
     }
 
@@ -185,8 +186,8 @@ app.post(
       [
         client_id,
         customer_name,
-        customer_email,
-        customer_phone,
+        customer_email || null, // Insert null if not provided
+        customer_phone || null, // Insert null if not provided
         customer_ktp_datauri,
         customer_kyc_datauri,
         profileId,
@@ -227,8 +228,8 @@ async function logTransactionToDb(txData) {
   const sql = `
     INSERT INTO blockchain_transactions
       (tx_hash, request_id, client_id, tx_type, eth_amount_wei, onchain_status, 
-       block_number, gas_used, version, issuer_address, db_log_duration_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       block_number, gas_used, version, issuer_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   console.log(
@@ -237,9 +238,6 @@ async function logTransactionToDb(txData) {
   const dbLogStartTime = Date.now();
 
   try {
-    const dbLogEndTime = Date.now();
-    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
-
     const params = [
       txHash,
       requestId,
@@ -251,10 +249,11 @@ async function logTransactionToDb(txData) {
       receipt.gasUsed.toString(),
       version,
       issuerAddress,
-      dbLogDurationMs,
     ];
 
     await queryAsync(sql, params);
+    const dbLogEndTime = Date.now();
+    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
 
     console.log(
       `[DB Logger] Successfully logged tx ${txHash}. DB write took: ${dbLogDurationMs}ms.`
@@ -980,8 +979,11 @@ app.post(
   "/kyc-requests/:id/fetch-and-verify-reuse",
   express.json(),
   async (req, res) => {
+    // --- PERFORMANCE MEASUREMENT START ---
+    const startTime = performance.now();
+    let durationMs = -1; // Default value
     const { id: requestId } = req.params;
-    const thisBankSignerAddress = await signer.getAddress(); // BANK B's address
+    const thisBankSignerAddress = await signer.getAddress(); // BANK A's address
     const thisBankIdentifier = process.env.THIS_BANK_IDENTIFIER;
     const customerPortalApiKey =
       process.env.CUSTOMER_PORTAL_API_KEY_FOR_THIS_BANK;
@@ -1072,7 +1074,7 @@ app.post(
           throw new Error(
             "Customer Portal did not return a valid decryption key."
           );
-        // In bank-b/backend/index.js
+        // In bank-a/backend/index.js
         console.log(
           `[FETCH-REUSE DEBUG] 2.4. Successfully obtained customerDecryptKey (first 6 chars): ${customerDecryptKey.substring(
             0,
@@ -1091,7 +1093,7 @@ app.post(
       }
 
       // 2. Determine Home Bank's Gateway URL
-      const homeBankGatewayUrl = getGatewayApiBaseUrl(actualHomeBankCode); // e.g., BANK_B -> http://localhost:4100
+      const homeBankGatewayUrl = getGatewayApiBaseUrl(actualHomeBankCode); // e.g., BANK_A -> http://localhost:4100
       if (!homeBankGatewayUrl) {
         console.error(
           `[FETCH-REUSE DEBUG] 3.2. Gateway URL for Home Bank ${actualHomeBankCode} not found.`
@@ -1104,7 +1106,7 @@ app.post(
         `[FETCH-REUSE DEBUG] 3.1. Home Bank Code: ${actualHomeBankCode}, Gateway URL: ${homeBankGatewayUrl}`
       );
 
-      // 3. Generate This Bank's (BANK B's) JWT badge for Home Bank Gateway (BANK B's Gateway)
+      // 3. Generate This Bank's (BANK A's) JWT badge for Home Bank Gateway (BANK A's Gateway)
       const interBankJwtBadge = jwt.sign(
         { address: thisBankSignerAddress },
         interBankJwtSecret,
@@ -1260,6 +1262,13 @@ app.post(
         `[FETCH-REUSE DEBUG] 9.1. Final status for request ${requestId} set to ${finalStatusKyc}.`
       );
 
+      durationMs = performance.now() - startTime;
+      console.log(
+        `[PERF] /fetch-and-verify-reuse for request ${requestId} took ${durationMs.toFixed(
+          2
+        )} ms. Match: ${match}`
+      );
+
       res.json({
         match,
         localHashes: { ktp: localHashKtp, kyc: localHashKyc },
@@ -1277,11 +1286,57 @@ app.post(
         `[FETCH-REUSE DEBUG] Outer error for request ${requestId}:`,
         error
       );
+      durationMs = performance.now() - startTime;
+      console.error(
+        `[PERF-ERROR] /fetch-and-verify-reuse for request ${requestId} failed after ${durationMs.toFixed(
+          2
+        )} ms. Error: ${error.message}`
+      );
       res.status(500).json({
         error: "Server error during KYC reuse fetch/verify.",
         detail: error.message,
       });
     }
+  }
+);
+
+app.put(
+  "/clients/:clientId/contact-sharing",
+  express.json(),
+  async (req, res) => {
+    const { clientId } = req.params;
+    const { field, value } = req.body; // field: 'customer_email' or 'customer_phone', value: string or null
+
+    if (!["customer_email", "customer_phone"].includes(field)) {
+      return res.status(400).json({ error: "Invalid field specified." });
+    }
+
+    if (value && typeof value !== "string") {
+      return res
+        .status(400)
+        .json({ error: "Invalid value provided for update." });
+    }
+
+    // This SQL query now uses `WHERE client_id = ?` to update ALL records for the user.
+    const sql = `UPDATE user_kyc_request SET ${field} = ? WHERE client_id = ?`;
+
+    connection.query(sql, [value, clientId], (err, result) => {
+      if (err) {
+        console.error(
+          `[CONTACT-SHARING] MySQL UPDATE error for client ${clientId}:`,
+          err
+        );
+        return res
+          .status(500)
+          .json({ error: "Database update failed", detail: err.message });
+      }
+      console.log(
+        `[CONTACT-SHARING] Updated '${field}' for client_id ${clientId}. Affected rows: ${result.affectedRows}`
+      );
+      res.json({
+        message: `Sharing preference for '${field}' was updated for all of the client's records.`,
+      });
+    });
   }
 );
 
